@@ -156,7 +156,7 @@ class DreameStatus:
         },
         default=None
     )
-     # piid: 5 (mop mode): (int8, unit: none) (acc: ['read', 'notify', 'write'], value-list: [{'value': 1, 'description': 'Low'}, {'value': 2, 'description': 'Medium'}, {'value': 3, 'description': 'High'}], value-range: None)
+    # piid: 5 (mop mode): (int8, unit: none) (acc: ['read', 'notify', 'write'], value-list: [{'value': 1, 'description': 'Low'}, {'value': 2, 'description': 'Medium'}, {'value': 3, 'description': 'High'}], value-range: None)
     mop_intensity: int = field(
         metadata={
             "siid": 4,
