@@ -69,6 +69,23 @@ class VacuumSpeed(Enum):
 class DreameStatus:
     _max_properties = 14
     
+    # siid 2: (Robot Cleaner): 2 props, 2 actions
+    # piid: 1 (Status): (uint8, unit: None) (acc: ['read', 'notify'], value-list: [{'value': 1, 'description': 'Sweeping'}, {'value': 2, 'description': 'Idle'}, {'value': 3, 'description': 'Paused'}, {'value': 4, 'description': 'Error'}, {'value': 5, 'description': 'Go Charging'}, {'value': 6, 'description': 'Charging'}, {'value': 7, 'description': 'Mopping'}], value-range: None)
+    status: int = field(
+        metadata={
+            "siid": 2,
+            "piid": 1,
+            "access": ["read", "notify"],
+            "enum": VacuumStatus,
+        },
+        default=None
+    )
+    # piid: 2 (Device Fault): (uint8, unit: None) (acc: ['read', 'notify'], value-list: [{'value': 0, 'description': 'No faults'}], value-range: [0, 100, 1])
+    error: int = field(
+        metadata={"siid": 2, "piid": 2, "access": ["read", "notify"], "enum": Error},
+        default=None
+    )
+    
     # siid 3: (Battery): 2 props, 1 actions
     # piid: 1 (Battery Level): (uint8, unit: percentage) (acc: ['read', 'notify'], value-list: [], value-range: [0, 100, 1])
     battery: int = field(metadata={"siid": 3, "piid": 1, "access": ["read", "notify"]}, default=None)
@@ -82,24 +99,7 @@ class DreameStatus:
         },
         default=None
     )
-    
-    # siid 2: (Robot Cleaner): 2 props, 2 actions
-    # piid: 2 (Device Fault): (uint8, unit: None) (acc: ['read', 'notify'], value-list: [{'value': 0, 'description': 'No faults'}], value-range: None)
-    error: int = field(
-        metadata={"siid": 2, "piid": 2, "access": ["read", "notify"], "enum": Error},
-        default=None
-    )
-    # piid: 1 (Status): (int8, unit: None) (acc: ['read', 'notify'], value-list: [{'value': 1, 'description': 'Sweeping'}, {'value': 2, 'description': 'Idle'}, {'value': 3, 'description': 'Paused'}, {'value': 4, 'description': 'Error'}, {'value': 5, 'description': 'Go Charging'}, {'value': 6, 'description': 'Charging'}], value-range: None)
-    status: int = field(
-        metadata={
-            "siid": 2,
-            "piid": 1,
-            "access": ["read", "notify"],
-            "enum": VacuumStatus,
-        },
-        default=None
-    )
-    
+        
     # siid 9: (Main Cleaning Brush): 2 props, 1 actions
     # piid: 1 (Brush Left Time): (uint16, unit: hour) (acc: ['read', 'notify'], value-list: [], value-range: [0, 300, 1])
     brush_left_time: int = field(
@@ -118,14 +118,14 @@ class DreameStatus:
         metadata={"siid": 11, "piid": 1, "access": ["read", "notify"]},
         default=None
     )
-    # piid: 2 (Filter Left Time): (uint16, unit: hour) (acc: ['read', 'notify'], value-list: [], value-range: [0, 150, 1])
+    # piid: 2 (Filter Left Time): (uint16, unit: hours) (acc: ['read', 'notify'], value-list: [], value-range: [0, 150, 1])
     filter_left_time: int = field(
         metadata={"siid": 11, "piid": 2, "access": ["read", "notify"]},
         default=None
     )
     
     # siid 10: (Side Cleaning Brush): 2 props, 1 actions
-    # piid: 1 (Brush Left Time): (uint16, unit: hour) (acc: ['read', 'notify'], value-list: [], value-range: [0, 200, 1])
+    # piid: 1 (Brush Left Time): (uint16, unit: hours) (acc: ['read', 'notify'], value-list: [], value-range: [0, 200, 1])
     brush_left_time2: int = field(
         metadata={"siid": 10, "piid": 1, "access": ["read", "notify"]},
         default=None
@@ -137,16 +137,16 @@ class DreameStatus:
     )
     
     # siid 4: (clean): 15 props, 2 actions
-    # piid: 1 (工作模式): (int32, unit: none) (acc: ['read', 'notify'], value-list: [], value-range: [0, 50, 1])
+    # piid: 1 (Mode): (int32, unit: none) (acc: ['read', 'notify'], value-list: [], value-range: [0, 50, 1])
     operating_mode: int = field(
         metadata={"siid": 4, "piid": 1, "access": ["read", "notify"]},
         default=None
     )
-    # piid: 3 (area): (string, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 32767, 1])
-    area: str = field(metadata={"siid": 4, "piid": 3, "access": ["read", "notify"]},default=None)
     # piid: 2 (timer): (string, unit: minute) (acc: ['read', 'notify'], value-list: [], value-range: [0, 32767, 1])
     timer: str = field(metadata={"siid": 4, "piid": 2, "access": ["read", "notify"]},default=None)
-    # piid: 4 (清扫模式): (int32, unit: none) (acc: ['read', 'notify', 'write'], value-list: [{'value': 0, 'description': '安静'}, {'value': 1, 'description': '标准'}, {'value': 2, 'description': '中档'}, {'value': 3, 'description': '强力'}], value-range: None)
+    # piid: 3 (area): (string, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 32767, 1])
+    area: str = field(metadata={"siid": 4, "piid": 3, "access": ["read", "notify"]},default=None)
+    # piid: 4 (cleaning mode): (int8, unit: none) (acc: ['read', 'notify', 'write'], value-list: [{'value': 0, 'description': 'Quiet'}, {'value': 1, 'description': 'Standard'}, {'value': 2, 'description': 'Medium'}, {'value': 3, 'description': 'Strong'}], value-range: None)
     fan_speed: int = field(
         metadata={
             "siid": 4,
@@ -156,7 +156,16 @@ class DreameStatus:
         },
         default=None
     )
-    
+     # piid: 5 (mop mode): (int8, unit: none) (acc: ['read', 'notify', 'write'], value-list: [{'value': 1, 'description': 'Low'}, {'value': 2, 'description': 'Medium'}, {'value': 3, 'description': 'High'}], value-range: None)
+    mop_intensity: int = field(
+        metadata={
+            "siid": 4,
+            "piid": 5,
+            "access": ["read", "notify", "write"],
+            "enum": MopSpeed,
+        },
+        default=None
+    )
     # # piid: 8 (delete-timer): (int32, unit: None) (acc: ['write'], value-list: [], value-range: [0, 100, 1])
     # # delete_timer: int = field(metadata={"siid": 18, "piid": 8, "access": ["write"]})
     # # piid: 13 (): (uint32, unit: minutes) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
@@ -166,12 +175,12 @@ class DreameStatus:
     # )
     
     # siid 12: (clean-logs): 4 props, 0 actions
-    # piid: 3 (): (uint32, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
+    # piid: 3 (Total number of cleanings): (uint32, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
     total_clean_count: int = field(
         metadata={"siid": 12, "piid": 3, "access": ["read", "notify"]},
         default=None
     )
-    # piid: 4 (): (uint32, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
+    # piid: 4 (Total area cleaned): (uint32, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
     total_area: int = field(
         metadata={"siid": 12, "piid": 4, "access": ["read", "notify"]},
         default=None
@@ -248,7 +257,7 @@ class DreameStatus:
         metadata={"siid": 7, "piid": 1, "access": ["read", "notify", "write"]},
         default=None
     )
-    # piid: 2 (语音包ID): (string, unit: none) (acc: ['read', 'notify', 'write'], value-list: [], value-range: None)
+    # piid: 2 (voice pack id): (string, unit: none) (acc: ['read', 'notify', 'write'], value-list: [], value-range: None)
     audio_language: str = field(
         metadata={"siid": 7, "piid": 2, "access": ["read", "notify", "write"]},
         default=None
@@ -391,7 +400,7 @@ class DreameVacuum(MiotDevice):
             "did":"<myID>",
             "siid":7,
             "piid":4,
-            "value":"{\"id\":\"FR\",\"url\":\"http://192.168.1.6:8123/local/dreame.vacuum.p2008_en.tar.gz\",\"md5\":\"d2287d7d125748bace8d0778b7df119c\",\"size\":1156119}"
+            "value":"{\"id\":\"FR\",\"url\":\"http://192.168.1.6:8123/local/dreame.vacuum.p2009_en.tar.gz\",\"md5\":\"d2287d7d125748bace8d0778b7df119c\",\"size\":1156119}"
         }]
         return self.send("set_properties", payload)
 
