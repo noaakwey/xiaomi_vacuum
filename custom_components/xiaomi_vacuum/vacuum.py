@@ -1,408 +1,411 @@
-"""Xiaomi Vacuum"""
-from functools import partial
 import logging
-import voluptuous as vol
+from dataclasses import dataclass, field
+from enum import Enum
 
-from .miio import DreameVacuum, DeviceException
-
-from homeassistant.components.vacuum import (
-    PLATFORM_SCHEMA,
-    SUPPORT_STATE,
-    SUPPORT_BATTERY,
-    SUPPORT_LOCATE,
-    SUPPORT_PAUSE,
-    SUPPORT_RETURN_HOME,
-    SUPPORT_START,
-    SUPPORT_STOP,
-    SUPPORT_FAN_SPEED,
-    STATE_CLEANING,
-    STATE_IDLE,
-    STATE_PAUSED,
-    STATE_RETURNING,
-    STATE_DOCKED,
-    STATE_ERROR,
-    StateVacuumEntity,
-)
-
-from homeassistant.const import CONF_HOST, CONF_NAME, CONF_TOKEN
-from homeassistant.helpers import config_validation as cv, entity_platform
+import click
+from .click_common import command
+from .miot_device import MiotDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_NAME = "Xiaomi Vacuum cleaner"
-DATA_KEY = "vacuum.xiaomi_vacuum"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_TOKEN): vol.All(str, vol.Length(min=32, max=32)),
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-    },
-    extra=vol.ALLOW_EXTRA,
-)
-
-ATTR_STATUS = "status"
-ATTR_ERROR = "error"
-ATTR_FAN_SPEED = "fan_speed"
-ATTR_CLEANING_TIME = "cleaning_time"
-ATTR_CLEANING_AREA = "cleaning_area"
-ATTR_MAIN_BRUSH_LEFT_TIME = "main_brush_time_left"
-ATTR_MAIN_BRUSH_LIFE_LEVEL = "main_brush_life_level"
-ATTR_SIDE_BRUSH_LEFT_TIME = "side_brush_time_left"
-ATTR_SIDE_BRUSH_LIFE_LEVEL = "side_brush_life_level"
-ATTR_FILTER_LIFE_LEVEL = "filter_life_level"
-ATTR_FILTER_LEFT_TIME = "filter_left_time"
-ATTR_CLEANING_TOTAL_TIME = "total_cleaning_count"
-ATTR_ZONE_ARRAY = "zone"
-ATTR_ZONE_REPEATER = "repeats"
-ATTR_WATER_LEVEL = "water_level"
-
-SERVICE_CLEAN_ZONE = "vacuum_clean_zone"
-SERVICE_WATER_LEVEL = "set_water_level"
-
-SUPPORT_XIAOMI = (
-    SUPPORT_STATE
-    | SUPPORT_BATTERY
-    | SUPPORT_LOCATE
-    | SUPPORT_RETURN_HOME
-    | SUPPORT_START
-    | SUPPORT_STOP
-    | SUPPORT_PAUSE
-    | SUPPORT_FAN_SPEED
-)
-
-STATE_CODE_TO_STATE = {
-    1: STATE_CLEANING,
-    2: STATE_IDLE,
-    3: STATE_PAUSED,
-    4: STATE_ERROR,
-    5: STATE_RETURNING,
-    6: STATE_DOCKED,
-}
-
-SPEED_CODE_TO_NAME = {
-    0: "Silent",
-    1: "Standard",
-    2: "Strong",
-    3: "Turbo",
-}
-
-WATER_CODE_TO_NAME = {
-    1: "Low",
-    2: "Med",
-    3: "High",
-}
-
-ERROR_CODE_TO_ERROR = {
-    0: "NoError",
-    1: "Drop",
-    2: "Cliff",
-    3: "Bumper",
-    4: "Gesture",
-    5: "Bumper_repeat",
-    6: "Drop_repeat",
-    7: "Optical_flow",
-    8: "No_box",
-    9: "No_tankbox",
-    10: "Waterbox_empty",
-    11: "Box_full",
-    12: "Brush",
-    13: "Side_brush",
-    14: "Fan",
-    15: "Left_wheel_motor",
-    16: "Right_wheel_motor",
-    17: "Turn_suffocate",
-    18: "Forward_suffocate",
-    19: "Charger_get",
-    20: "Battery_low",
-    21: "Charge_fault",
-    22: "Battery_percentage",
-    23: "Heart",
-    24: "Camera_occlusion",
-    25: "Camera_fault",
-    26: "Event_battery",
-    27: "Forward_looking",
-    28: "Gyroscope",
-}
+class ChargeStatus(Enum):
+    Charging = 1
+    Not_charging = 2
+    Go_charging = 5
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the Xiaomi vacuum cleaner robot platform."""
-    if DATA_KEY not in hass.data:
-        hass.data[DATA_KEY] = {}
-
-    host = config.get(CONF_HOST)
-    token = config.get(CONF_TOKEN)
-    name = config.get(CONF_NAME)
-
-    # Create handler
-    _LOGGER.info("Initializing with host %s (token %s...)", host, token)
-    vacuum = DreameVacuum(host, token)
-
-    mirobo = MiroboVacuum(name, vacuum)
-    hass.data[DATA_KEY][host] = mirobo
-
-    async_add_entities([mirobo], update_before_add=True)
-
-    platform = entity_platform.current_platform.get()
-
-    platform.async_register_entity_service(
-        SERVICE_CLEAN_ZONE,
-        {
-            vol.Required(ATTR_ZONE_ARRAY): cv.string,
-            vol.Required(ATTR_ZONE_REPEATER): vol.All(
-                vol.Coerce(int), vol.Clamp(min=1, max=3)
-            ),
-        },
-        MiroboVacuum.async_clean_zone.__name__,
-    )
-
-    platform.async_register_entity_service(
-        SERVICE_WATER_LEVEL,
-        {
-            vol.Required(ATTR_WATER_LEVEL): cv.string,
-        },
-        MiroboVacuum.async_set_water_level.__name__,
-    )
-
-class MiroboVacuum(StateVacuumEntity):
-    """Representation of a Xiaomi Vacuum cleaner robot."""
-
-    def __init__(self, name, vacuum):
-        """Initialize the Xiaomi vacuum cleaner robot handler."""
-        self._name = name
-        self._vacuum = vacuum
-
-        self._fan_speeds = None
-        self._fan_speeds_reverse = None
-
-        self.vacuum_state = None
-        self.vacuum_error = None
-        self.battery_percentage = None
-        
-        self._current_fan_speed = None
-
-        self._main_brush_time_left = None
-        self._main_brush_life_level = None
-
-        self._side_brush_time_left = None
-        self._side_brush_life_level = None
-
-        self._filter_life_level = None
-        self._filter_left_time = None
-
-        self._total_clean_count = None
-        self._cleaning_area = None
-        self._cleaning_time = None		
-
-        self._water_level = None
-        self._current_water_level = None
-        self._water_level_reverse = None
-        
-
-    @property
-    def name(self):
-        """Return the name of the device."""
-        return self._name
-
-    @property
-    def state(self):
-        """Return the status of the vacuum cleaner."""
-        if self.vacuum_state is not None:
-            try:
-                return STATE_CODE_TO_STATE[int(self.vacuum_state)]
-            except KeyError:
-                _LOGGER.error(
-                    "STATE_CODE not supported: %s",
-                    self.vacuum_state,
-                )
-                return None
-
-    @property
-    def error(self):
-        """Return the error of the vacuum cleaner."""
-        if self.vacuum_error is not None:
-            try:
-                return ERROR_CODE_TO_ERROR.get(self.vacuum_error, "Unknown")
-            except KeyError:
-                _LOGGER.error(
-                    "ERROR_CODE not supported: %s",
-                    self.vacuum_error,
-                )
-                return None
-
-    @property
-    def battery_level(self):
-        """Return the battery level of the vacuum cleaner."""
-        if self.vacuum_state is not None:
-            return self.battery_percentage
-
-    @property
-    def fan_speed(self):
-        """Return the fan speed of the vacuum cleaner."""
-        if self.vacuum_state is not None:
-            speed = self._current_fan_speed
-            if speed in self._fan_speeds_reverse:
-                return SPEED_CODE_TO_NAME.get(self._current_fan_speed, "Unknown")
-
-            _LOGGER.debug("Unable to find reverse for %s", speed)
-
-            return speed
-
-    @property
-    def fan_speed_list(self):
-        """Get the list of available fan speed steps of the vacuum cleaner."""
-        return list(self._fan_speeds_reverse)
-
-    @property
-    def water_level(self):
-        """Return the fan speed of the vacuum cleaner."""
-        if self.vacuum_state is not None:
-            water = self._current_water_level
-            if water in self._water_level_reverse:
-                return WATER_CODE_TO_NAME.get(self._current_water_level, "Unknown")
-
-            _LOGGER.debug("Unable to find reverse for %s", speed)
-
-            return water
-
-    @property
-    def water_level_list(self):
-        """Get the list of available water level list of the vacuum cleaner."""
-        return list(self._water_level_reverse)
-
-    @property
-    def extra_state_attributes(self):
-        """Return the specific state attributes of this vacuum cleaner."""
-        if self.vacuum_state is not None:
-            return {
-                ATTR_STATUS: STATE_CODE_TO_STATE[int(self.vacuum_state)],
-                ATTR_ERROR:  ERROR_CODE_TO_ERROR.get(self.vacuum_error, "Unknown"),
-				ATTR_FAN_SPEED: SPEED_CODE_TO_NAME.get(self._current_fan_speed, "Unknown"),
-                ATTR_MAIN_BRUSH_LEFT_TIME: self._main_brush_time_left,
-                ATTR_MAIN_BRUSH_LIFE_LEVEL: self._main_brush_life_level,
-                ATTR_SIDE_BRUSH_LEFT_TIME: self._side_brush_time_left,
-                ATTR_SIDE_BRUSH_LIFE_LEVEL: self._side_brush_life_level,
-                ATTR_FILTER_LIFE_LEVEL: self._filter_life_level,
-                ATTR_FILTER_LEFT_TIME: self._filter_left_time,
-                ATTR_CLEANING_AREA: self._cleaning_area,
-                ATTR_CLEANING_TIME: self._cleaning_time,				
-                ATTR_CLEANING_TOTAL_TIME: self._total_clean_count,
-				ATTR_WATER_LEVEL: WATER_CODE_TO_NAME.get(self._current_water_level, "Unknown"),
-				"water_level_list": ["Low", "Med", "High"],
-            } 
+class Error(Enum):
+    NoError = 0
+    Drop = 1
+    Cliff = 2
+    Bumper = 3
+    Gesture = 4
+    Bumper_repeat = 5
+    Drop_repeat = 6
+    Optical_flow = 7
+    No_box = 8
+    No_tankbox = 9
+    Waterbox_empty = 10
+    Box_full = 11
+    Brush = 12
+    Side_brush = 13
+    Fan = 14
+    Left_wheel_motor = 15
+    Right_wheel_motor = 16
+    Turn_suffocate = 17
+    Forward_suffocate = 18
+    Charger_get = 19
+    Battery_low = 20
+    Charge_fault = 21
+    Battery_percentage = 22
+    Heart = 23
+    Camera_occlusion = 24
+    Camera_fault = 25
+    Event_battery = 26
+    Forward_looking = 27
+    Gyroscope = 28
 
 
-    @property
-    def supported_features(self):
-        """Flag vacuum cleaner robot features that are supported."""
-        return SUPPORT_XIAOMI
+class VacuumStatus(Enum):
+    Sweeping = 1
+    Idle = 2
+    Paused = 3
+    Error = 4
+    Go_charging = 5
+    Charging = 6
 
-    async def _try_command(self, mask_error, func, *args, **kwargs):
-        """Call a vacuum command handling error messages."""
-        try:
-            await self.hass.async_add_executor_job(partial(func, *args, **kwargs))
-            return True
-        except DeviceException as exc:
-            _LOGGER.error(mask_error, exc)
-            return False
 
+class VacuumSpeed(Enum):
+    """Fan speeds, same as for ViomiVacuum."""
+
+    Silent = 0
+    Standard = 1
+    Medium = 2
+    Turbo = 3
+
+
+@dataclass
+class DreameStatus:
+    _max_properties = 14
     
-    async def async_locate(self, **kwargs):
-        """Locate the vacuum cleaner."""
-        await self._try_command("Unable to locate the botvac: %s", self._vacuum.find)
+    # siid 2: (Robot Cleaner): 2 props, 2 actions
+    # piid: 1 (Status): (uint8, unit: None) (acc: ['read', 'notify'], value-list: [{'value': 1, 'description': 'Sweeping'}, {'value': 2, 'description': 'Idle'}, {'value': 3, 'description': 'Paused'}, {'value': 4, 'description': 'Error'}, {'value': 5, 'description': 'Go Charging'}, {'value': 6, 'description': 'Charging'}, {'value': 7, 'description': 'Mopping'}], value-range: None)
+    status: int = field(
+        metadata={
+            "siid": 2,
+            "piid": 1,
+            "access": ["read", "notify"],
+            "enum": VacuumStatus,
+        },
+        default=None
+    )
+    # piid: 2 (Device Fault): (uint8, unit: None) (acc: ['read', 'notify'], value-list: [{'value': 0, 'description': 'No faults'}], value-range: [0, 100, 1])
+    error: int = field(
+        metadata={"siid": 2, "piid": 2, "access": ["read", "notify"], "enum": Error},
+        default=None
+    )
+    
+    # siid 3: (Battery): 2 props, 1 actions
+    # piid: 1 (Battery Level): (uint8, unit: percentage) (acc: ['read', 'notify'], value-list: [], value-range: [0, 100, 1])
+    battery: int = field(metadata={"siid": 3, "piid": 1, "access": ["read", "notify"]}, default=None)
+    # piid: 2 (Charging State): (uint8, unit: None) (acc: ['read', 'notify'], value-list: [{'value': 1, 'description': 'Charging'}, {'value': 2, 'description': 'Not Charging'}, {'value': 5, 'description': 'Go Charging'}], value-range: None)
+    state: int = field(
+        metadata={
+            "siid": 3,
+            "piid": 2,
+            "access": ["read", "notify"],
+            "enum": ChargeStatus,
+        },
+        default=None
+    )
+        
+    # siid 9: (Main Cleaning Brush): 2 props, 1 actions
+    # piid: 1 (Brush Left Time): (uint16, unit: hour) (acc: ['read', 'notify'], value-list: [], value-range: [0, 300, 1])
+    brush_left_time: int = field(
+        metadata={"siid": 9, "piid": 1, "access": ["read", "notify"]},
+        default=None
+    )
+    # piid: 2 (Brush Life Level): (uint8, unit: percentage) (acc: ['read', 'notify'], value-list: [], value-range: [0, 100, 1])
+    brush_life_level: int = field(
+        metadata={"siid": 9, "piid": 2, "access": ["read", "notify"]},
+        default=None
+    )
+    
+    # siid 11: (Filter): 2 props, 1 actions
+    # piid: 1 (Filter Life Level): (uint8, unit: percentage) (acc: ['read', 'notify'], value-list: [], value-range: [0, 100, 1])
+    filter_life_level: int = field(
+        metadata={"siid": 11, "piid": 1, "access": ["read", "notify"]},
+        default=None
+    )
+    # piid: 2 (Filter Left Time): (uint16, unit: hours) (acc: ['read', 'notify'], value-list: [], value-range: [0, 150, 1])
+    filter_left_time: int = field(
+        metadata={"siid": 11, "piid": 2, "access": ["read", "notify"]},
+        default=None
+    )
+    
+    # siid 10: (Side Cleaning Brush): 2 props, 1 actions
+    # piid: 1 (Brush Left Time): (uint16, unit: hours) (acc: ['read', 'notify'], value-list: [], value-range: [0, 200, 1])
+    brush_left_time2: int = field(
+        metadata={"siid": 10, "piid": 1, "access": ["read", "notify"]},
+        default=None
+    )
+    # piid: 2 (Brush Life Level): (uint8, unit: percentage) (acc: ['read', 'notify'], value-list: [], value-range: [0, 100, 1])
+    brush_life_level2: int = field(
+        metadata={"siid": 10, "piid": 2, "access": ["read", "notify"]},
+        default=None
+    )
+    
+    # siid 4: (clean): 15 props, 2 actions
+    # piid: 1 (Mode): (int32, unit: none) (acc: ['read', 'notify'], value-list: [], value-range: [0, 50, 1])
+    operating_mode: int = field(
+        metadata={"siid": 4, "piid": 1, "access": ["read", "notify"]},
+        default=None
+    )
+    # piid: 2 (timer): (string, unit: minute) (acc: ['read', 'notify'], value-list: [], value-range: [0, 32767, 1])
+    timer: str = field(metadata={"siid": 4, "piid": 2, "access": ["read", "notify"]},default=None)
+    # piid: 3 (area): (string, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 32767, 1])
+    area: str = field(metadata={"siid": 4, "piid": 3, "access": ["read", "notify"]},default=None)
+    # piid: 4 (cleaning mode): (int8, unit: none) (acc: ['read', 'notify', 'write'], value-list: [{'value': 0, 'description': 'Quiet'}, {'value': 1, 'description': 'Standard'}, {'value': 2, 'description': 'Medium'}, {'value': 3, 'description': 'Strong'}], value-range: None)
+    fan_speed: int = field(
+        metadata={
+            "siid": 4,
+            "piid": 4,
+            "access": ["read", "notify", "write"],
+            "enum": VacuumSpeed,
+        },
+        default=None
+    )
+     # piid: 5 (mop mode): (int8, unit: none) (acc: ['read', 'notify', 'write'], value-list: [{'value': 1, 'description': 'Low'}, {'value': 2, 'description': 'Medium'}, {'value': 3, 'description': 'High'}], value-range: None)
+    mop_intensity: int = field(
+        metadata={
+            "siid": 4,
+            "piid": 5,
+            "access": ["read", "notify", "write"],
+            "enum": MopSpeed,
+        },
+        default=None
+    )
+    # # piid: 8 (delete-timer): (int32, unit: None) (acc: ['write'], value-list: [], value-range: [0, 100, 1])
+    # # delete_timer: int = field(metadata={"siid": 18, "piid": 8, "access": ["write"]})
+    # # piid: 13 (): (uint32, unit: minutes) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
+    # last_clean: int = field(
+        # metadata={"siid": 18, "piid": 13, "access": ["read", "notify"]},
+        # default=None
+    # )
+    
+    # siid 12: (clean-logs): 4 props, 0 actions
+    # piid: 3 (Total number of cleanings): (uint32, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
+    total_clean_count: int = field(
+        metadata={"siid": 12, "piid": 3, "access": ["read", "notify"]},
+        default=None
+    )
+    # piid: 4 (Total area cleaned): (uint32, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
+    total_area: int = field(
+        metadata={"siid": 12, "piid": 4, "access": ["read", "notify"]},
+        default=None
+    )
+    
+    # # piid: 16 (): (uint32, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 4294967295, 1])
+    # total_log_start: int = field(
+        # metadata={"siid": 18, "piid": 16, "access": ["read", "notify"]},
+        # default=None
+    # )
+    # # piid: 17 (): (uint16, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: [0, 100, 1])
+    # button_led: int = field(
+        # metadata={"siid": 18, "piid": 17, "access": ["read", "notify"]},
+        # default=None
+    # )
+    # # piid: 18 (): (uint8, unit: None) (acc: ['read', 'notify'], value-list: [{'value': 0, 'description': ''}, {'value': 1, 'description': ''}], value-range: None)
+    # clean_success: int = field(
+        # metadata={"siid": 18, "piid": 18, "access": ["read", "notify"]},
+        # default=None
+    # )
+    # # siid 19: (consumable): 3 props, 0 actions
+    # # piid: 1 (life-sieve): (string, unit: None) (acc: ['read', 'write'], value-list: [], value-range: None)
+    # life_sieve: str = field(
+        # metadata={"siid": 19, "piid": 1, "access": ["read", "write"]},
+        # default=None
+    # )
+    # # piid: 2 (life-brush-side): (string, unit: None) (acc: ['read', 'write'], value-list: [], value-range: None)
+    # life_brush_side: str = field(
+        # metadata={"siid": 19, "piid": 2, "access": ["read", "write"]},
+        # default=None
+    # )
+    # # piid: 3 (life-brush-main): (string, unit: None) (acc: ['read', 'write'], value-list: [], value-range: None)
+    # life_brush_main: str = field(
+        # metadata={"siid": 19, "piid": 3, "access": ["read", "write"]},
+        # default=None
+    # )
+    
+    # siid 5: (do-not-disturb): 3 props, 0 actions
+    # piid: 1 (enable): (bool, unit: None) (acc: ['read', 'notify', 'write'], value-list: [], value-range: None)
+    dnd_enabled: bool = field(
+        metadata={"siid": 5, "piid": 1, "access": ["read", "notify", "write"]},
+        default=None
+    )
+    # piid: 2 (start-time): (string, unit: None) (acc: ['read', 'notify', 'write'], value-list: [], value-range: None)
+    dnd_start_time: str = field(
+        metadata={"siid": 5, "piid": 2, "access": ["read", "notify", "write"]},
+        default=None
+    )
+    # piid: 3 (stop-time): (string, unit: None) (acc: ['read', 'notify', 'write'], value-list: [], value-range: None)
+    dnd_stop_time: str = field(
+        metadata={"siid": 5, "piid": 3, "access": ["read", "notify", "write"]},
+        default=None
+    )
+    
+    # siid 21: (remote): 2 props, 3 actions
+    # piid: 1 (deg): (string, unit: None) (acc: ['write'], value-list: [], value-range: None)
+    # deg: str = field(metadata={"siid": 21, "piid": 1, "access": ["write"]})
+    # piid: 2 (speed): (string, unit: None) (acc: ['write'], value-list: [], value-range: None)
+    # speed: str = field(metadata={"siid": 21, "piid": 2, "access": ["write"]})
+    # siid 22: (warn): 1 props, 0 actions
+    
+    # siid 6: (map): 6 props, 2 actions
+    # piid: 1 (map-view): (string, unit: None) (acc: ['notify'], value-list: [], value-range: None)
+    map_view: str = field(
+        metadata={"siid": 6, "piid": 1, "access": ["notify"]},
+        default=None
+    )
+    # piid: 2 (frame-info): (string, unit: None) (acc: ['write'], value-list: [], value-range: None)
+    # frame_info: str = field(metadata={"siid": 6, "piid": 2, "access": ["write"]})
+    
+    # siid 7: (audio): 4 props, 2 actions
+    # piid: 1 (volume): (int32, unit: None) (acc: ['read', 'notify', 'write'], value-list: [], value-range: [0, 100, 1])
+    audio_volume: int = field(
+        metadata={"siid": 7, "piid": 1, "access": ["read", "notify", "write"]},
+        default=None
+    )
+    # piid: 2 (voice pack id): (string, unit: none) (acc: ['read', 'notify', 'write'], value-list: [], value-range: None)
+    audio_language: str = field(
+        metadata={"siid": 7, "piid": 2, "access": ["read", "notify", "write"]},
+        default=None
+    )
+    
+    # siid 8: (): 3 props, 1 actions
+    # piid: 1 (): (string, unit: None) (acc: ['read', 'notify'], value-list: [], value-range: None)
+    timezone: str = field(
+        metadata={"siid": 8, "piid": 1, "access": ["read", "notify"]},
+        default=None
+    )
 
-    async def async_start(self):
-        """Start or resume the cleaning task."""
-        await self._try_command(
-            "Unable to start the vacuum: %s", self._vacuum.start)
 
-    async def async_stop(self, **kwargs):
-        """Stop the vacuum cleaner."""
-        await self._try_command("Unable to stop: %s", self._vacuum.stop)
+class DreameVacuum(MiotDevice):
+    """Support for dreame vacuum (1C STYTJ01ZHM, dreame.vacuum.mc1808)."""
 
-    async def async_clean_zone(self, zone, repeats=1):
-        """Clean selected area."""
-        try:
-            await self.hass.async_add_executor_job(self._vacuum.zone_cleanup, zone)
-        except (OSError, DeviceException) as exc:
-            _LOGGER.error("Unable to send zoned_clean command to the vacuum: %s", exc)
+    _MAPPING = DreameStatus
 
-    async def async_pause(self):
-        """Pause the cleaning task."""
-        await self._try_command("Unable to set start/pause: %s", self._vacuum.stop)
+    @command()
+    def status(self) -> DreameStatus:
+        return self.get_properties_for_dataclass(DreameStatus)
 
-    async def async_return_to_base(self, **kwargs):
-        """Set the vacuum cleaner to return to the dock."""
-        await self._try_command("Unable to return home: %s", self._vacuum.return_home)
+    def call_action(self, siid, aiid, params=None):
+        # {"did":"<mydeviceID>","siid":18,"aiid":1,"in":[{"piid":1,"value":2}]
+        if params is None:
+            params = []
+        payload = {
+            "did": f"call-{siid}-{aiid}",
+            "siid": siid,
+            "aiid": aiid,
+            "in": params,
+        }
+        return self.send("action", payload)
 
-    async def async_set_fan_speed(self, fan_speed, **kwargs):
-        """Set fan speed."""
-        if fan_speed in self._fan_speeds_reverse:
-            fan_speed = self._fan_speeds_reverse[fan_speed]
-        else:
-            try:
-                fan_speed = int(fan_speed)
-            except ValueError as exc:
-                _LOGGER.error(
-                    "Fan speed step not recognized (%s). Valid speeds are: %s",
-                    exc,
-                    self.fan_speed_list,
-                )
-                return
-        await self._try_command(
-            "Unable to set fan speed: %s", self._vacuum.set_fan_speed, fan_speed)    
+    @command()
+    def set_fan_speed(self, speed):
+        return self.set_property(fan_speed=speed)
+        
+    # siid 3: (Battery): 2 props, 1 actions
+    # aiid 1 Start Charge: in: [] -> out: []
+    @command()
+    def return_home(self) -> None:
+        """aiid 1 Start Charge: in: [] -> out: []"""
+        return self.call_action(3, 1)
 
-    async def async_set_water_level(self, water_level, **kwargs):
-        """Set water level."""
-        if water_level in self._water_level_reverse:
-            water_level = self._water_level_reverse[water_level]
-        else:
-            try:
-                water_level = int(water_level)
-            except ValueError as exc:
-                _LOGGER.error(
-                    "water level step not recognized (%s). Valid are: %s",
-                    exc,
-                    self.water_level_list,
-                )
-                return
-        await self._try_command(
-            "Unable to set water level: %s", self._vacuum.set_water_level, water_level)    
+    # siid 2: (Robot Cleaner): 2 props, 2 actions
+    # aiid 1 Start Sweep: in: [] -> out: []
+    @command()
+    def start_sweep(self) -> None:
+        """aiid 1 Start Sweep: in: [] -> out: []"""
+        return self.call_action(2, 1)
 
+    # aiid 2 Stop Sweeping: in: [] -> out: []
+    @command()
+    def stop_sweeping(self) -> None:
+        """aiid 2 Stop Sweeping: in: [] -> out: []"""
+        return self.call_action(2, 2)
 
+    # siid ???: (Identify): 0 props, 1 actions
+    # aiid ??? Identify: in: [] -> out: []
+    @command()
+    def find(self) -> None:
+        """Find the robot."""
+        return self.audio_position() # Just play audio for now
 
-    def update(self):
-        """Fetch state from the device."""
-        try:
-            state = self._vacuum.status()
-            self.vacuum_state = state.status
-            self.vacuum_error = state.error
+    # siid 9: (Main Cleaning Brush): 2 props, 1 actions
+    # aiid 1 Reset Brush Life: in: [] -> out: []
+    @command()
+    def reset_brush_life(self) -> None:
+        """aiid 1 Reset Brush Life: in: [] -> out: []"""
+        return self.call_action(9, 1)
 
-            self._fan_speeds = SPEED_CODE_TO_NAME
-            self._fan_speeds_reverse = {v: k for k, v in self._fan_speeds.items()}
+    # siid 11: (Filter): 2 props, 1 actions
+    # aiid 1 Reset Filter Life: in: [] -> out: []
+    @command()
+    def reset_filter_life(self) -> None:
+        """aiid 1 Reset Filter Life: in: [] -> out: []"""
+        return self.call_action(11, 1)
 
-            self.battery_percentage = state.battery
+    # siid 10: (Side Cleaning Brush): 2 props, 1 actions
+    # aiid 1 Reset Brush Life: in: [] -> out: []
+    @command()
+    def reset_brush_life2(self) -> None:
+        """aiid 1 Reset Brush Life: in: [] -> out: []"""
+        return self.call_action(10, 1)
 
-            self._total_clean_count = state.total_clean_count
+    # siid 18: (clean): 16 props, 2 actions
+    # aiid 1 开始清扫: in: [] -> out: []
+    @command()
+    def start(self) -> None:
+        """Start cleaning."""
+        # TODO: find out other values
+        payload = [{"piid": 1, "value": 2}]
+        return self.call_action(4, 1, payload)
 
-            self._current_fan_speed = state.fan_speed
+    # aiid 2 stop-clean: in: [] -> out: []
+    @command()
+    def stop(self) -> None:
+        """Stop cleaning."""
+        return self.call_action(4, 2)
 
-            self._main_brush_time_left = state.brush_left_time
-            self._main_brush_life_level = state.brush_life_level
+    # # siid 21: (remote): 2 props, 3 actions
+    # # aiid 1 start-remote: in: [1, 2] -> out: []
+    # @command()
+    # def start_remote(self, _) -> None:
+        # """aiid 1 start-remote: in: [1, 2] -> out: []"""
+        # return self.call_action(21, 1)
 
-            self._side_brush_time_left = state.brush_left_time2
-            self._side_brush_life_level = state.brush_life_level2
+    # # aiid 2 stop-remote: in: [] -> out: []
+    # @command()
+    # def stop_remote(self) -> None:
+        # """aiid 2 stop-remote: in: [] -> out: []"""
+        # return self.call_action(21, 2)
 
-            self._filter_life_level = state.filter_life_level
-            self._filter_left_time = state.filter_left_time
-			
-            self._cleaning_area = state.area
-            self._cleaning_time = state.timer
-			
-            self._water_level = WATER_CODE_TO_NAME
-            self._water_level_reverse = {v: k for k, v in self._water_level.items()}
-            self._current_water_level = state.water_level
+    # # aiid 3 exit-remote: in: [] -> out: []
+    # @command()
+    # def exit_remote(self) -> None:
+        # """aiid 3 exit-remote: in: [] -> out: []"""
+        # return self.call_action(21, 3)
 
-        except OSError as exc:
-            _LOGGER.error("Got OSError while fetching the state: %s", exc) 
+    # siid 6: (map): 6 props, 2 actions
+    # aiid 1 map-req: in: [2] -> out: []
+    @command()
+    def map_req(self) -> None:
+        """aiid 1 map-req: in: [2] -> out: []"""
+        return self.call_action(6, 1)
+
+    # siid 7: (audio): 4 props, 2 actions
+    # aiid 1 : in: [] -> out: []
+    @command()
+    def audio_position(self) -> None:
+        """TODO"""
+        return self.call_action(7, 1)
+
+    # aiid 2 : in: [] -> out: []
+    @command()
+    def install_voice_pack(self) -> None:
+        """Install given voice pack."""
+        payload = [{
+            "did":"<myID>",
+            "siid":7,
+            "piid":4,
+            "value":"{\"id\":\"FR\",\"url\":\"http://192.168.1.6:8123/local/dreame.vacuum.p2009_en.tar.gz\",\"md5\":\"d2287d7d125748bace8d0778b7df119c\",\"size\":1156119}"
+        }]
+        return self.send("set_properties", payload)
+
+    # aiid 2 : in: [] -> out: []
+    @command()
+    def test_sound(self) -> None:
+        """aiid 3 : in: [] -> out: []"""
+        return self.call_action(7, 2)
